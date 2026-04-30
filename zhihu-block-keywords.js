@@ -1,85 +1,151 @@
 // ==UserScript==
 // @name         知乎标题关键词屏蔽（精简版·可拖动·可最小化·带关键词列表）
 // @namespace    https://github.com/
-// @version      1.4
-// @description  知乎关键词屏蔽精简版，无正则，保留极简关键词列表，支持面板拖动+最小化，省内存
-// @author       你的名字
+// @version      1.6
+// @description  知乎关键词屏蔽精简版，支持面板拖动+最小化，远程URL同步，修复清除后不恢复等Bug
+// @author       holipay
 // @match        *://*.zhihu.com/*
 // @grant        none
-// @run-at       document-end
+// @run-at       document-idle
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    // 本地存储 key（仅保存关键词，无多余数据，省内存）
     const STORAGE_KEY = 'zhihu_block_keywords_simple';
+    const REMOTE_URL_KEY = 'zhihu_block_keywords_remote_url';
+    const CARD_SELECTORS = '.TopstoryItem, .ContentItem, .List-item';
+    const TITLE_SELECTORS = 'h2, .ContentItem-title, .TopstoryContent-title';
 
-    // 获取关键词（精简逻辑，减少内存占用）
+    // ==================== 存储 ====================
     function getWords() {
         try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
         catch { return []; }
     }
 
-    // 保存关键词
     function saveWords(words) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(words));
     }
 
-    // 核心过滤：标题包含关键词就隐藏整条内容（精简匹配逻辑，提升效率）
+    // ==================== 【Bug1修复】核心过滤：隐藏匹配 + 恢复不匹配 ====================
     function filterContent() {
         const words = getWords().map(w => w.toLowerCase().trim()).filter(Boolean);
-        if (words.length === 0) return;
 
-        // 匹配所有知乎文章卡片（推荐页/关注页/回答页），精简选择器，减少性能消耗
-        document.querySelectorAll('.TopstoryItem, .ContentItem, .List-item').forEach(card => {
-            const title = card.querySelector('h2, .ContentItem-title, .TopstoryContent-title')?.textContent.toLowerCase() || '';
+        document.querySelectorAll(CARD_SELECTORS).forEach(card => {
+            if (words.length === 0) {
+                // 没有关键词 → 恢复所有卡片
+                card.style.display = '';
+                return;
+            }
+            const title = card.querySelector(TITLE_SELECTORS)?.textContent.toLowerCase() || '';
             if (words.some(word => title.includes(word))) {
                 card.style.display = 'none';
+            } else {
+                card.style.display = ''; // 【关键】恢复之前被隐藏的卡片
             }
         });
     }
 
-    // ==================== 可拖动、可最小化面板（保留极简关键词列表） ====================
+    // 【Bug3修复】防抖版 filterContent，避免 MutationObserver 高频触发
+    let filterTimer = null;
+    function filterContentDebounced() {
+        if (filterTimer) clearTimeout(filterTimer);
+        filterTimer = setTimeout(filterContent, 300);
+    }
+
+    // ==================== 远程同步关键词 ====================
+    async function fetchRemoteWords(url) {
+        const resp = await fetch(url, { cache: 'no-store' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const text = await resp.text();
+        return text.split(/[\n\r]+/)
+            .map(s => s.trim())
+            .filter(s => s && !s.startsWith('#'));
+    }
+
+    async function updateFromRemote(url) {
+        if (!url || !url.startsWith('http')) {
+            alert('请输入有效的URL（以http/https开头）');
+            return;
+        }
+        localStorage.setItem(REMOTE_URL_KEY, url);
+        try {
+            const remoteWords = await fetchRemoteWords(url);
+            if (!remoteWords.length) { alert('远程列表为空'); return; }
+            const localWords = getWords();
+            // 合并时做大小写不敏感去重（保留本地已有写法）
+            const lowerLocal = localWords.map(w => w.toLowerCase());
+            const newWords = remoteWords.filter(w => !lowerLocal.includes(w.toLowerCase()));
+            const merged = [...localWords, ...newWords];
+            saveWords(merged);
+            renderWordList();
+            filterContent();
+            alert(`更新完成！远程 ${remoteWords.length} 个，新增 ${newWords.length} 个，当前共 ${merged.length} 个关键词`);
+        } catch (e) {
+            alert('获取远程列表失败: ' + e.message);
+        }
+    }
+
+    // ==================== 面板 ====================
     function createPanel() {
-        // 主面板（精简尺寸，减少占用）
         const panel = document.createElement('div');
         panel.style.cssText = `
-            position: fixed;
-            top: 80px;
-            right: 20px;
-            z-index: 999999;
-            width: 240px;
-            background: #fff;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            overflow: hidden;
-            font-size: 14px;
+            position: fixed !important;
+            top: 80px !important;
+            right: 20px !important;
+            z-index: 999999 !important;
+            width: 260px !important;
+            background: #fff !important;
+            border-radius: 8px !important;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.15) !important;
+            overflow: hidden !important;
+            font-size: 14px !important;
         `;
 
-        // 拖动条（按住可移动面板）
+        // 拖动条
         const dragBar = document.createElement('div');
         dragBar.style.cssText = `
-            padding: 8px 12px;
-            background: #f5f5f5;
-            cursor: move;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+            padding: 8px 12px !important;
+            background: #f5f5f5 !important;
+            cursor: move !important;
+            display: flex !important;
+            justify-content: space-between !important;
+            align-items: center !important;
+            user-select: none !important;
         `;
-        dragBar.textContent = '知乎关键词屏蔽';
+        const dragTitle = document.createElement('span');
+        dragTitle.textContent = '知乎关键词屏蔽';
+        dragBar.appendChild(dragTitle);
 
-        // 最小化按钮
         const minimizeBtn = document.createElement('span');
         minimizeBtn.textContent = '−';
-        minimizeBtn.style.cssText = 'cursor: pointer; font-weight: bold;';
+        minimizeBtn.style.cssText = 'cursor: pointer; font-weight: bold; font-size: 16px;';
         dragBar.appendChild(minimizeBtn);
         panel.appendChild(dragBar);
 
-        // 内容区（输入框+关键词列表+清空按钮，极简渲染，省内存）
         const content = document.createElement('div');
         content.style.padding = '12px';
         panel.appendChild(content);
+
+        // 远程同步区域
+        const remoteSection = document.createElement('div');
+        remoteSection.style.cssText = 'margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #eee;';
+        const remoteLabel = document.createElement('div');
+        remoteLabel.textContent = '远程关键词URL：';
+        remoteLabel.style.cssText = 'font-size: 12px; color: #666; margin-bottom: 4px;';
+        remoteSection.appendChild(remoteLabel);
+        const remoteInput = document.createElement('input');
+        remoteInput.type = 'text';
+        remoteInput.placeholder = 'https://example.com/keywords.txt';
+        remoteInput.style.cssText = 'width: 100%; padding: 5px 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; font-size: 12px; margin-bottom: 4px;';
+        remoteInput.value = localStorage.getItem(REMOTE_URL_KEY) || '';
+        remoteSection.appendChild(remoteInput);
+        const remoteBtn = document.createElement('button');
+        remoteBtn.textContent = '从URL同步并合并';
+        remoteBtn.style.cssText = 'width: 100%; padding: 6px; background: #ff9800; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;';
+        remoteBtn.onclick = () => updateFromRemote(remoteInput.value.trim());
+        remoteSection.appendChild(remoteBtn);
+        content.appendChild(remoteSection);
 
         // 关键词输入框
         const input = document.createElement('input');
@@ -95,34 +161,74 @@
         `;
         content.appendChild(input);
 
-        // 极简关键词列表（仅显示关键词+删除按钮，无多余样式，省内存）
+        // 关键词列表
         const wordList = document.createElement('div');
         wordList.style.cssText = `
-            max-height: 100px;
+            max-height: 120px;
             overflow-y: auto;
             margin-bottom: 8px;
             font-size: 12px;
         `;
         content.appendChild(wordList);
 
-        // 清空按钮（仅保留清空功能，无多余按钮）
+        // 按钮行
+        const btnRow = document.createElement('div');
+        btnRow.style.cssText = 'display: flex; gap: 6px;';
+
         const clearBtn = document.createElement('button');
-        clearBtn.textContent = '清空所有关键词';
+        clearBtn.textContent = '清空所有';
         clearBtn.style.cssText = `
-            width: 100%;
-            padding: 8px;
+            flex: 1;
+            padding: 7px;
             background: #f23838;
             color: #fff;
             border: none;
             border-radius: 4px;
             cursor: pointer;
+            font-size: 12px;
         `;
-        content.appendChild(clearBtn);
+        btnRow.appendChild(clearBtn);
 
-        // 渲染关键词列表（极简渲染，减少内存消耗）
+        const exportBtn = document.createElement('button');
+        exportBtn.textContent = '导出';
+        exportBtn.style.cssText = `
+            flex: 1;
+            padding: 7px;
+            background: #167dff;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        `;
+        btnRow.appendChild(exportBtn);
+
+        const importBtn = document.createElement('button');
+        importBtn.textContent = '导入';
+        importBtn.style.cssText = `
+            flex: 1;
+            padding: 7px;
+            background: #4CAF50;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        `;
+        btnRow.appendChild(importBtn);
+
+        content.appendChild(btnRow);
+
+        // 关键词计数
+        const countDisplay = document.createElement('div');
+        countDisplay.style.cssText = 'text-align: center; font-size: 11px; color: #999; margin-top: 6px;';
+        content.appendChild(countDisplay);
+
+        // ==================== 渲染关键词列表 ====================
         function renderWordList() {
             wordList.innerHTML = '';
             const words = getWords();
+            countDisplay.textContent = `当前 ${words.length} 个关键词`;
             if (words.length === 0) {
                 const emptyTip = document.createElement('div');
                 emptyTip.textContent = '暂无屏蔽关键词';
@@ -130,7 +236,6 @@
                 wordList.appendChild(emptyTip);
                 return;
             }
-            // 极简渲染每个关键词，带删除按钮，无多余样式
             words.forEach((word, index) => {
                 const wordItem = document.createElement('div');
                 wordItem.style.cssText = `
@@ -142,107 +247,142 @@
                     border-radius: 3px;
                     margin-bottom: 3px;
                 `;
-                wordItem.textContent = word;
+                // 【Bug4修复】用文本节点代替 textContent，避免与子元素冲突
+                const textSpan = document.createElement('span');
+                textSpan.textContent = word;
+                textSpan.style.cssText = 'flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
+                wordItem.appendChild(textSpan);
 
                 const deleteBtn = document.createElement('span');
                 deleteBtn.textContent = '×';
-                deleteBtn.style.cssText = 'color: #f23838; cursor: pointer; margin-left: 6px;';
+                deleteBtn.style.cssText = 'color: #f23838; cursor: pointer; margin-left: 8px; font-weight: bold;';
                 deleteBtn.onclick = () => {
-                    const newWords = words.filter((_, i) => i !== index);
+                    const newWords = getWords().filter((_, i) => i !== index);
                     saveWords(newWords);
                     renderWordList();
                     filterContent();
                 };
-
                 wordItem.appendChild(deleteBtn);
                 wordList.appendChild(wordItem);
             });
         }
 
-        // ==================== 拖动功能（精简逻辑，减少内存占用） ====================
-        let isDragging = false, startX, startY, left, top;
+        // ==================== 拖动 ====================
+        let isDragging = false, startX, startY, startLeft, startTop;
         dragBar.onmousedown = e => {
             isDragging = true;
             startX = e.clientX;
             startY = e.clientY;
-            left = panel.offsetLeft;
-            top = panel.offsetTop;
-            document.body.style.userSelect = 'none'; // 拖动时禁止选中文本
+            const rect = panel.getBoundingClientRect();
+            startLeft = rect.left;
+            startTop = rect.top;
+            document.body.style.userSelect = 'none';
         };
         document.onmousemove = e => {
             if (!isDragging) return;
-            const dx = e.clientX - startX;
-            const dy = e.clientY - startY;
-            panel.style.left = left + dx + 'px';
-            panel.style.top = top + dy + 'px';
-            panel.style.right = 'auto'; // 取消固定右侧，方便自由拖动
+            panel.style.left = startLeft + (e.clientX - startX) + 'px';
+            panel.style.top = startTop + (e.clientY - startY) + 'px';
+            panel.style.right = 'auto';
         };
         document.onmouseup = () => {
             isDragging = false;
-            document.body.style.userSelect = ''; // 拖动结束恢复选中文本
+            document.body.style.userSelect = '';
         };
 
-        // ==================== 最小化功能 ====================
+        // ==================== 最小化 ====================
         let minimized = false;
         minimizeBtn.onclick = () => {
             minimized = !minimized;
-            content.style.display = minimized ? 'none' : 'block'; // 最小化隐藏内容区（含列表）
-            minimizeBtn.textContent = minimized ? '□' : '−'; // 切换按钮图标
-            dragBar.textContent = minimized ? ' 屏蔽已最小化' : '知乎关键词屏蔽';
-            dragBar.appendChild(minimizeBtn); // 重新添加按钮，避免错位
+            content.style.display = minimized ? 'none' : 'block';
+            minimizeBtn.textContent = minimized ? '□' : '−';
+            dragTitle.textContent = minimized ? '已最小化' : '知乎关键词屏蔽';
         };
 
-        // ==================== 关键词操作（精简，贴合需求） ====================
-        // 回车添加关键词
-        input.onkeydown = e => {
+        // ==================== 【Bug2修复】关键词操作：只用 keydown，过滤中文输入法组合键 ====================
+        input.addEventListener('keydown', e => {
             if (e.key !== 'Enter') return;
-            const word = input.value.trim();
-            if (!word) return;
-            const words = getWords();
-            if (!words.includes(word)) { // 避免重复添加，减少冗余
-                saveWords([...words, word]);
-                renderWordList();
-                filterContent(); // 添加后立即过滤
-            }
-            input.value = ''; // 清空输入框，方便继续添加
-        };
+            // 中文输入法确认时 e.isComposing 为 true，跳过
+            if (e.isComposing) return;
+            e.preventDefault();
+            addKeyword(input.value);
+        });
 
-        // 点击添加关键词（兼容回车，操作更灵活）
-        input.addEventListener('change', () => {
-            const word = input.value.trim();
+        function addKeyword(raw) {
+            const word = raw.trim();
             if (!word) return;
             const words = getWords();
-            if (!words.includes(word)) {
+            // 大小写不敏感去重
+            if (!words.some(w => w.toLowerCase() === word.toLowerCase())) {
                 saveWords([...words, word]);
                 renderWordList();
                 filterContent();
             }
             input.value = '';
-        });
+        }
 
-        // 清空所有关键词
+        // 清空
         clearBtn.onclick = () => {
+            if (!getWords().length) return;
             if (confirm('确定清空所有关键词吗？')) {
                 saveWords([]);
                 renderWordList();
-                filterContent(); // 清空后恢复显示所有内容
+                filterContent(); // 【Bug1】清除后会恢复所有隐藏内容
             }
         };
 
-        // 初始渲染关键词列表
-        renderWordList();
+        // 导出
+        exportBtn.onclick = () => {
+            const words = getWords();
+            if (!words.length) return alert('暂无关键词');
+            const blob = new Blob([words.join('\n')], { type: 'text/plain' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'zhihu-block-keywords.txt';
+            a.click();
+        };
 
-        // 添加面板到页面
+        // 导入（合并）
+        importBtn.onclick = () => {
+            const inp = document.createElement('input');
+            inp.type = 'file';
+            inp.accept = '.txt';
+            inp.onchange = e => {
+                const f = e.target.files[0];
+                if (!f) return;
+                const reader = new FileReader();
+                reader.onload = ev => {
+                    const imported = ev.target.result.split(/[\n\r]+/).map(s => s.trim()).filter(Boolean);
+                    const existing = getWords();
+                    const lowerExisting = existing.map(w => w.toLowerCase());
+                    const newWords = imported.filter(w => !lowerExisting.includes(w.toLowerCase()));
+                    const merged = [...existing, ...newWords];
+                    saveWords(merged);
+                    renderWordList();
+                    filterContent();
+                    alert(`导入完成，新增 ${newWords.length} 个，当前共 ${merged.length} 个关键词`);
+                };
+                reader.readAsText(f);
+            };
+            inp.click();
+        };
+
+        renderWordList();
         document.body.appendChild(panel);
     }
 
-    // ==================== 初始化（精简延迟，提升加载速度） ====================
-    setTimeout(() => {
+    // ==================== 初始化 ====================
+    function init() {
         createPanel();
         filterContent();
+        // 【Bug3修复】用防抖版 MutationObserver
+        new MutationObserver(filterContentDebounced)
+            .observe(document.body, { childList: true, subtree: true });
+    }
 
-        // 监听页面动态加载（无限滚动），持续过滤，精简监听逻辑
-        const observer = new MutationObserver(filterContent);
-        observer.observe(document.body, { childList: true, subtree: true });
-    }, 1200); // 延迟1.2秒，兼顾加载速度和页面渲染完成度
+    // 【改善】用 requestAnimationFrame 等待 DOM 就绪，比 setTimeout 更可靠
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        init();
+    } else {
+        document.addEventListener('DOMContentLoaded', init);
+    }
 })();
