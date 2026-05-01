@@ -5,7 +5,8 @@
 // @description  屏蔽雪球用户：作者→隐藏信息和正文（保留跟帖）；评论者→仅隐藏该条评论。支持远程列表同步。
 // @author       holipay
 // @match        *://xueqiu.com/*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      *
 // @run-at       document-idle
 // @license      MIT
 // ==/UserScript==
@@ -158,22 +159,32 @@
     }
 
     // ====================== 远程列表 ======================
-    async function updateFromRemote(url) {
+    function updateFromRemote(url) {
         if (!url || !url.startsWith('http')) {
             alert('请输入有效的URL'); return;
         }
         localStorage.setItem(REMOTE_URL_KEY, url);
-        try {
-            const resp = await fetch(url, { cache: 'no-store' });
-            if (!resp.ok) throw new Error('HTTP ' + resp.status);
-            const remote = (await resp.text()).split(/[\n\r]+/).map(s => s.trim()).filter(s => s && !s.startsWith('#'));
-            if (!remote.length) { alert('远程列表为空'); return; }
-            const local = getBlockList();
-            const merged = [...new Set([...local, ...remote])];
-            saveBlockList(merged);
-            scanAndHide();
-            alert(`合并完成：远程 ${remote.length} 个，新增 ${merged.length - local.length} 个，共 ${merged.length} 个`);
-        } catch (e) { alert('获取失败: ' + e.message); }
+
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: url,
+            cache: 'no-store',
+            onload: function(resp) {
+                if (resp.status < 200 || resp.status >= 300) {
+                    alert('获取失败: HTTP ' + resp.status); return;
+                }
+                const remote = resp.responseText.split(/[\n\r]+/).map(s => s.trim()).filter(s => s && !s.startsWith('#'));
+                if (!remote.length) { alert('远程列表为空'); return; }
+                const local = getBlockList();
+                const merged = [...new Set([...local, ...remote])];
+                saveBlockList(merged);
+                scanAndHide();
+                alert(`合并完成：远程 ${remote.length} 个，新增 ${merged.length - local.length} 个，共 ${merged.length} 个`);
+            },
+            onerror: function(e) {
+                alert('获取失败: 网络错误，请检查URL是否可达');
+            }
+        });
     }
 
     // ====================== 面板 ======================
