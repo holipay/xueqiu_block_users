@@ -1,12 +1,11 @@
 // ==UserScript==
 // @name         雪球一键屏蔽用户
 // @namespace    https://github.com/
-// @version      3.1
-// @description  屏蔽雪球用户：作者→隐藏信息和正文（保留跟帖）；评论者→仅隐藏该条评论。支持远程列表同步。
+// @version      3.2
+// @description  屏蔽雪球用户：作者→隐藏信息和正文（保留跟帖）；评论者→仅隐藏该条评论。
 // @author       holipay
 // @match        *://xueqiu.com/*
-// @grant        GM_xmlhttpRequest
-// @connect      *
+// @grant        none
 // @run-at       document-idle
 // @license      MIT
 // ==/UserScript==
@@ -15,7 +14,6 @@
     'use strict';
 
     const STORAGE_KEY = 'xueqiu_block_users';
-    const REMOTE_URL_KEY = 'xueqiu_block_remote_url';
 
     // ====================== 存储 ======================
     function getBlockList() {
@@ -109,6 +107,10 @@
             }
 
             // --- 评论者被屏蔽 → 只隐藏该条评论 ---
+            // 雪球评论 DOM:
+            //   div.comment__item__main
+            //     ├─ div.comment__item__main__hd (包含 a.user-name)
+            //     └─ div.comment__item__main__bd (评论正文)
             const commentArea = post.querySelector(
                 '[class*="comment"], [class*="Comment"], [class*="reply"], [class*="Reply"]'
             );
@@ -158,35 +160,6 @@
         }).observe(document.body, { childList: true, subtree: true });
     }
 
-    // ====================== 远程列表 ======================
-    function updateFromRemote(url) {
-        if (!url || !url.startsWith('http')) {
-            alert('请输入有效的URL'); return;
-        }
-        localStorage.setItem(REMOTE_URL_KEY, url);
-
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: url,
-            cache: 'no-store',
-            onload: function(resp) {
-                if (resp.status < 200 || resp.status >= 300) {
-                    alert('获取失败: HTTP ' + resp.status); return;
-                }
-                const remote = resp.responseText.split(/[\n\r]+/).map(s => s.trim()).filter(s => s && !s.startsWith('#'));
-                if (!remote.length) { alert('远程列表为空'); return; }
-                const local = getBlockList();
-                const merged = [...new Set([...local, ...remote])];
-                saveBlockList(merged);
-                scanAndHide();
-                alert(`合并完成：远程 ${remote.length} 个，新增 ${merged.length - local.length} 个，共 ${merged.length} 个`);
-            },
-            onerror: function(e) {
-                alert('获取失败: 网络错误，请检查URL是否可达');
-            }
-        });
-    }
-
     // ====================== 面板 ======================
     function createPanel() {
         const panel = document.createElement('div');
@@ -195,7 +168,7 @@
         // 拖动条
         const bar = document.createElement('div');
         bar.style.cssText = 'background:#f5f5f5!important;padding:6px 10px!important;cursor:move!important;display:flex!important;justify-content:space-between!important;user-select:none!important;';
-        bar.textContent = '屏蔽面板 v3.1';
+        bar.textContent = '屏蔽面板 v3.2';
         const minBtn = document.createElement('span');
         minBtn.textContent = '−';
         minBtn.style.cursor = 'pointer';
@@ -205,28 +178,6 @@
         const body = document.createElement('div');
         body.style.padding = '10px';
         panel.appendChild(body);
-
-        // 远程
-        const remoteLabel = document.createElement('div');
-        remoteLabel.textContent = '远程屏蔽列表URL：';
-        remoteLabel.style.cssText = 'font-size:12px;color:#666;margin-bottom:4px;';
-        body.appendChild(remoteLabel);
-        const remoteInput = document.createElement('input');
-        remoteInput.type = 'text';
-        remoteInput.placeholder = 'https://example.com/block.txt';
-        remoteInput.style.cssText = 'width:100%;padding:4px 6px;margin-bottom:4px;border:1px solid #ccc;border-radius:3px;font-size:12px;box-sizing:border-box;';
-        remoteInput.value = localStorage.getItem(REMOTE_URL_KEY) || '';
-        body.appendChild(remoteInput);
-        const remoteBtn = document.createElement('button');
-        remoteBtn.textContent = '从URL更新并合并';
-        remoteBtn.style.cssText = 'width:100%;padding:6px;margin-bottom:8px;background:#ff9800;color:#fff;border:none;border-radius:4px;cursor:pointer;';
-        remoteBtn.onclick = () => updateFromRemote(remoteInput.value.trim());
-        body.appendChild(remoteBtn);
-
-        // 分割线
-        const hr = document.createElement('div');
-        hr.style.cssText = 'border-top:1px solid #eee;margin-bottom:8px;';
-        body.appendChild(hr);
 
         // 导入/导出
         const importBtn = document.createElement('button');
