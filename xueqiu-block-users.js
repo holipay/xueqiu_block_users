@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         雪球一键屏蔽用户
 // @namespace    https://github.com/
-// @version      3.0
-// @description  屏蔽雪球用户：作者→隐藏整帖；评论者→仅隐藏该条评论。支持远程列表同步。
+// @version      3.1
+// @description  屏蔽雪球用户：作者→隐藏信息和正文（保留跟帖）；评论者→仅隐藏该条评论。支持远程列表同步。
 // @author       holipay
 // @match        *://xueqiu.com/*
 // @grant        none
@@ -71,54 +71,60 @@
     // ====================== 核心：扫描并隐藏 ======================
     // 雪球 DOM 结构:
     //   div.timeline__item__main
-    //     ├─ 头部区域 (a.user-name = 帖子作者)
+    //     ├─ div.timeline__item__info (帖子作者信息)
     //     └─ div.timeline__item__bd
     //          ├─ div.timeline__item__content > div.content.content--description (帖子正文)
     //          └─ 评论区 (a.user-name = 评论者)
+    //
+    // 屏蔽策略:
+    //   作者被屏蔽 → 隐藏 timeline__item__info + timeline__item__content，保留评论区（跟帖可见）
+    //   评论者被屏蔽 → 只隐藏该条评论
     function scanAndHide() {
         const blocked = getBlockList();
         if (!blocked.length) return;
 
         // 遍历每一个帖子
         document.querySelectorAll('div.timeline__item__main, article, [class*="timeline__item"]').forEach(post => {
-            if (post.style.display === 'none') return;
-
             // --- 判断帖子作者 ---
-            // 作者的 user-name 不在评论区内，通常是最靠近帖子顶层的那个
-            const allNames = post.querySelectorAll('a.user-name');
-            if (!allNames.length) return;
+            // 作者的 user-name 在 timeline__item__info 内
+            const infoArea = post.querySelector('div.timeline__item__info');
+            const authorNameEl = infoArea ? infoArea.querySelector('a.user-name') : null;
+            const authorUid = authorNameEl ? getUserId(authorNameEl) : null;
 
-            // 找到评论区（如果有的话）
-            const commentArea = post.querySelector(
-                '[class*="comment"], [class*="Comment"], [class*="reply"], [class*="Reply"]'
-            );
-
-            // 帖子作者 = 不在评论区内的 user-name
-            let authorUid = null;
-            for (const nameEl of allNames) {
-                if (!commentArea || !commentArea.contains(nameEl)) {
-                    authorUid = getUserId(nameEl);
-                    break;
-                }
-            }
-
-            // 作者被屏蔽 → 整个帖子消失
+            // 作者被屏蔽 → 只隐藏作者信息和帖子正文，保留评论区（跟帖）
             if (authorUid && blocked.includes(authorUid)) {
-                post.style.display = 'none';
-                post.setAttribute('data-xq-blocked', authorUid);
-                return;
+                // 隐藏作者信息区域
+                if (infoArea && infoArea.style.display !== 'none') {
+                    infoArea.style.display = 'none';
+                    infoArea.setAttribute('data-xq-blocked', authorUid);
+                }
+                // 隐藏帖子正文内容
+                const contentArea = post.querySelector('div.timeline__item__bd div.timeline__item__content');
+                if (contentArea && contentArea.style.display !== 'none') {
+                    contentArea.style.display = 'none';
+                    contentArea.setAttribute('data-xq-blocked', authorUid);
+                }
+                // 不 return，继续往下处理评论区的屏蔽逻辑
             }
 
             // --- 评论者被屏蔽 → 只隐藏该条评论 ---
+            const commentArea = post.querySelector(
+                '[class*="comment"], [class*="Comment"], [class*="reply"], [class*="Reply"]'
+            );
             if (commentArea) {
                 commentArea.querySelectorAll('a.user-name').forEach(nameEl => {
                     const uid = getUserId(nameEl);
                     if (!uid || !blocked.includes(uid)) return;
 
-                    // 找到该评论的最小容器
-                    let commentItem = nameEl.closest(
-                        '.comment-item, .reply-item, [class*="comment__item"], [class*="reply__item"]'
-                    );
+                    // 优先匹配雪球实际 DOM：comment__item__main
+                    let commentItem = nameEl.closest('div.comment__item__main');
+
+                    // fallback: 通用选择器
+                    if (!commentItem) {
+                        commentItem = nameEl.closest(
+                            '.comment-item, .reply-item, [class*="comment__item"], [class*="reply__item"]'
+                        );
+                    }
                     if (!commentItem) {
                         // fallback: 向上找只含一个 user-name 的块
                         let node = nameEl.parentElement;
@@ -178,7 +184,7 @@
         // 拖动条
         const bar = document.createElement('div');
         bar.style.cssText = 'background:#f5f5f5!important;padding:6px 10px!important;cursor:move!important;display:flex!important;justify-content:space-between!important;user-select:none!important;';
-        bar.textContent = '屏蔽面板 v3.0';
+        bar.textContent = '屏蔽面板 v3.1';
         const minBtn = document.createElement('span');
         minBtn.textContent = '−';
         minBtn.style.cursor = 'pointer';
